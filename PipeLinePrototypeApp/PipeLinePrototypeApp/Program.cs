@@ -2,9 +2,9 @@
 // PipeLine A->B->C->D (4개)
 // 작업 1, 2, 3, 4, 5, 6, 7 (7개)
 // 측정 결과 : 
-// A(동기)->B(동기)->C(동기)->D(동기) : 16200ms
-// A(동기)->B(동기)->C(비동기)->D(동기) : 16254ms
-// A(동기)->B(비동기)->C(비동기)->D(동기) : 16247ms
+// A(ST)->B(ST)->C(ST)->D(S:C완료후) : 16200ms
+// A(ST)->B(ST)->C(MT)->D(S:C완료후) : 16254ms
+// A(ST)->B(MT)->C(MT)->D(MST) : 10157ms
 using System;
 using System.Diagnostics;
 using System.Linq;
@@ -26,7 +26,7 @@ namespace ConsoleATI
         }
     }
 
-    enum TaskType { SingleTask, MultiTask };
+    enum TaskType { SingleTask, MultiTask, MergeSequentialTask };
     internal class PipelineProcessor
     {
         char[] works = { '1', '2', '3', '4', '5', '6', '7' };
@@ -39,11 +39,11 @@ namespace ConsoleATI
             taskProcessors = new TaskProcessor[]
             {
                 new TaskProcessor(pipelines[0], works, TaskType.SingleTask), //동기
-                new TaskProcessor(pipelines[1], works, TaskType.SingleTask), //동기
+                new TaskProcessor(pipelines[1], works, TaskType.MultiTask), //동기
                 new TaskProcessor(pipelines[2], works, TaskType.MultiTask), //비동기
-                new TaskProcessor(pipelines[3], works, TaskType.SingleTask, lastTask: true) // 동기(마지막 단계 표시)
+                new TaskProcessor(pipelines[3], works, TaskType.MergeSequentialTask) // 동기(마지막 단계 표시)
             };
-            //각 파이프의 태스크 파이프라인 연결
+            //각 파이프의 태스크 파이프라인 연결SequentialProcessingAfterPreviousTaskCompletion
             for (int i = 0; i < taskProcessors.Length - 1; i++)
                 taskProcessors[i].LinkNextTask(taskProcessors[i + 1]); //A->B->C->D
         }
@@ -60,8 +60,8 @@ namespace ConsoleATI
                 Console.WriteLine($"[모니터링]:단계 {pipelines[i]} 완료\n");
             }
 
-            //마지막 파이프 작업은 결과를 취합함.
-            taskProcessors[taskProcessors.Length - 1].StartTask();
+            if (taskProcessors[taskProcessors.Length - 1].LastTaskAfterPrevTaskCompletion)
+                taskProcessors[taskProcessors.Length - 1].StartTask();
             await taskProcessors[taskProcessors.Length - 1].WaitForCompletionAsync();
             Console.WriteLine($"[최종취합]:단계 {pipelines[taskProcessors.Length - 1]} 완료\n");
         }
@@ -76,25 +76,31 @@ namespace ConsoleATI
         private TaskType nextTaskType;
         private AutoResetEvent[] curTaskEvents;//현 태스크의 작업 실행 대기를 위한 이벤트
         private AutoResetEvent[] nextTaskEvents;//다음 태스크에 작업 진행을 알리기 위한 이벤트
-        private bool lastTask;
+        public bool LastTaskAfterPrevTaskCompletion { get; set; }
 
-        public TaskProcessor(char pipeID, char[] works, TaskType taskType, bool lastTask = false)
+        public TaskProcessor(char pipeID, char[] works, TaskType taskType, bool lastTaskAfterPrevTaskCompletion = false)
         {
             this.pipeID = pipeID;
             this.works = works;
             this.curTaskType = taskType;
-            this.lastTask = lastTask;
+            this.LastTaskAfterPrevTaskCompletion = lastTaskAfterPrevTaskCompletion;
             if (taskType == TaskType.SingleTask)
             {
                 this.tasks = new Task[1];
                 this.curTaskEvents = new AutoResetEvent[] { new AutoResetEvent(false) };
                 RunSingleTask();
             }
-            else
+            else if (taskType == TaskType.MultiTask)
             {
                 this.tasks = new Task[works.Length];
                 this.curTaskEvents = works.Select(_ => new AutoResetEvent(false)).ToArray();
                 RunMultiTask();
+            }
+            else //TaskType.SingleMergeTask
+            {
+                this.tasks = new Task[1];
+                this.curTaskEvents = works.Select(_ => new AutoResetEvent(false)).ToArray();
+                RunSingleMergeTask();
             }
         }
         public void StartTask()
@@ -109,7 +115,7 @@ namespace ConsoleATI
         public void LinkNextTask(TaskProcessor nextTask)
         {
             nextTaskType = nextTask.curTaskType;
-            nextTaskEvents = nextTask.lastTask ? null : nextTask.curTaskEvents;
+            nextTaskEvents = nextTask.LastTaskAfterPrevTaskCompletion ? null :  nextTask.curTaskEvents;
         }
         private void RunSingleTask()
         {
@@ -146,6 +152,23 @@ namespace ConsoleATI
                     nextTaskEvents?[workIndex].Set(); //마지막 파이프가 아니면 다음 파이프는 다중 태스크이며 작업 진행을 알림
                 });
             }
+        }
+        private void RunSingleMergeTask()
+        {
+            tasks[0] = Task.Run(() =>
+            {
+                Console.WriteLine($"{pipeID} Task 생성 작업 대기");
+                for (int i = 0; i < works.Length; ++i)
+                {
+                    curTaskEvents[i].WaitOne(); //현 파이프의 태스크에서 순차 처리를 위해 대기
+
+                    Console.WriteLine($"{pipeID} 작업 {works[i]} 시작.(동기)");
+                    Task.Delay(1000).Wait();
+                    Console.WriteLine($"{pipeID} 작업 {works[i]} 종료.(동기)");
+
+                    nextTaskEvents?[nextTaskType == TaskType.SingleTask ? 0 : i].Set(); //다음 파이프가 단일 태스크 or 다중 태스크에 따라 작업 진행을 알림                    
+                }
+            });
         }
     }
 }
