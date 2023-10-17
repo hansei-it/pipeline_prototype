@@ -1,11 +1,4 @@
-﻿// 성능 측정 : 코어 개수 8개( 2.2 GHz)
-// PipeLine A->B->C->D (4개)
-// 작업 1, 2, 3, 4, 5, 6, 7 (7개)
-// 측정 결과 : 
-// A(ST)->B(ST)->C(ST)->D(S:C완료후) : 16200ms
-// A(ST)->B(ST)->C(MT)->D(S:C완료후) : 16254ms
-// A(ST)->B(MT)->C(MT)->D(MST) : 10157ms
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading;
@@ -39,11 +32,11 @@ namespace ConsoleATI
             taskProcessors = new TaskProcessor[]
             {
                 new TaskProcessor(pipelines[0], works, TaskType.SingleTask), //동기
-                new TaskProcessor(pipelines[1], works, TaskType.MultiTask), //동기
+                new TaskProcessor(pipelines[1], works, TaskType.MultiTask), //비동기
                 new TaskProcessor(pipelines[2], works, TaskType.MultiTask), //비동기
-                new TaskProcessor(pipelines[3], works, TaskType.MergeSequentialTask) // 동기(마지막 단계 표시)
+                new TaskProcessor(pipelines[3], works, TaskType.MergeSequentialTask) // 동기
             };
-            //각 파이프의 태스크 파이프라인 연결SequentialProcessingAfterPreviousTaskCompletion
+            //각 파이프의 태스크 파이프라인 연결
             for (int i = 0; i < taskProcessors.Length - 1; i++)
                 taskProcessors[i].LinkNextTask(taskProcessors[i + 1]); //A->B->C->D
         }
@@ -60,6 +53,7 @@ namespace ConsoleATI
                 Console.WriteLine($"[모니터링]:단계 {pipelines[i]} 완료\n");
             }
 
+            // 이전 단계까지 실행 완료 대기가 필요하면 대기하여 마지막 단계 취합
             if (taskProcessors[taskProcessors.Length - 1].LastTaskAfterPrevTaskCompletion)
                 taskProcessors[taskProcessors.Length - 1].StartTask();
             await taskProcessors[taskProcessors.Length - 1].WaitForCompletionAsync();
@@ -96,7 +90,7 @@ namespace ConsoleATI
                 this.curTaskEvents = works.Select(_ => new AutoResetEvent(false)).ToArray();
                 RunMultiTask();
             }
-            else //TaskType.SingleMergeTask
+            else //TaskType.MergeSequentialTask
             {
                 this.tasks = new Task[1];
                 this.curTaskEvents = works.Select(_ => new AutoResetEvent(false)).ToArray();
